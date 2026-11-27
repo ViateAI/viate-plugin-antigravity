@@ -16,7 +16,7 @@ A pasted credential also works. JSON accepts `accessToken` or `access_token`, `r
 
 `keepalive` refreshes the access token one minute before `expiresAt`. `subscription` reads `retrieveUserQuota` and `retrieveUserQuotaSummary`.
 
-`listModels` calls `fetchAvailableModels`. Gemini 3.1 Flash Image is added when the catalog omits it.
+`listModels` calls `fetchAvailableModels`. Gemini 3.1 Flash Image is added when the catalog omits it. A fixed map of model id to thinking suffixes decides the split: sync drops a listed suffix, and a chat or responses request appends one. An id that is not in the map is left unchanged. A reasoning effort that is not in that model's list fails with 400.
 
 ## Install
 

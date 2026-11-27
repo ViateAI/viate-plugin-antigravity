@@ -17,6 +17,7 @@ import {
 import {
   ANTIGRAVITY_DEFAULT_SYSTEM,
   buildAntigravityEnvelope,
+  collapseAntigravityModels,
   createStreamState,
   resolveAntigravityWireModel,
   takeSseEvents,
@@ -32,6 +33,96 @@ afterEach(async () => {
 });
 
 describe("antigravity translation", () => {
+  it("appends a listed thinking tier without a prior model sync", () => {
+    const envelope = buildAntigravityEnvelope({
+      model: "gemini-4-neon",
+      reasoning_effort: "high",
+      messages: [{ role: "user", content: "hi" }],
+    }, "project", "session");
+    assert.equal(envelope.model, "gemini-4-neon-high");
+    assert.equal(resolveAntigravityWireModel("gemini-4-neon"), "gemini-4-neon-low");
+    assert.equal(resolveAntigravityWireModel("gemini-4-neon", "xhigh"), "gemini-4-neon-xhigh");
+    assert.equal(resolveAntigravityWireModel("gemini-3.8-flash"), "gemini-3.8-flash-low");
+    assert.equal(resolveAntigravityWireModel("gemini-3.8-flash", "medium"), "gemini-3.8-flash-medium");
+    assert.equal(resolveAntigravityWireModel("gemini-4-argon"), "gemini-4-argon-low");
+    assert.equal(resolveAntigravityWireModel("gemini-4-carbon"), "gemini-4-carbon-low");
+    assert.equal(resolveAntigravityWireModel("gemini-4-carbon", "high"), "gemini-4-carbon-high");
+    assert.equal(resolveAntigravityWireModel("gemini-4-hydrogen", "xhigh"), "gemini-4-hydrogen-xhigh");
+    assert.equal(resolveAntigravityWireModel("gemini-4-hydrogen-tiered"), "gemini-4-hydrogen-tiered-high");
+    assert.equal(resolveAntigravityWireModel("claude-opus-5-5", "medium"), "claude-opus-5-5-medium");
+    assert.equal(resolveAntigravityWireModel("claude-sonnet-5-5"), "claude-sonnet-5-5-low");
+    assert.equal(resolveAntigravityWireModel("gemini-4-neon-high", "medium"), "gemini-4-neon-medium");
+    assert.equal(resolveAntigravityWireModel("gemini-4-argon-disabled"), "gemini-4-argon-disabled");
+    assert.equal(resolveAntigravityWireModel("gemini-3.8-flash-tiered", "high"), "gemini-3.8-flash-tiered");
+    assert.equal(resolveAntigravityWireModel("gemini-4-hydrogen-sonar", "high"), "gemini-4-hydrogen-sonar");
+    assert.equal(resolveAntigravityWireModel("gpt-oss-120b-medium", "low"), "gpt-oss-120b-medium");
+    assert.equal(resolveAntigravityWireModel("claude-opus-4-6-thinking", "high"), "claude-opus-4-6-thinking");
+    assert.throws(
+      () => resolveAntigravityWireModel("gemini-4-carbon", "xhigh"),
+      (error: unknown) => statusCode(error) === 400 && /gemini-4-carbon/.test(message(error)),
+    );
+    assert.throws(
+      () => resolveAntigravityWireModel("gemini-4-argon", "xhigh"),
+      (error: unknown) => {
+        assert.equal(statusCode(error), 400);
+        assert.match(message(error), /xhigh/);
+        assert.match(message(error), /gemini-4-argon/);
+        assert.match(message(error), /low, medium, high/);
+        return true;
+      },
+    );
+    assert.throws(
+      () => resolveAntigravityWireModel("gemini-4-hydrogen-tiered", "low"),
+      (error: unknown) => {
+        assert.equal(statusCode(error), 400);
+        assert.match(message(error), /gemini-4-hydrogen-tiered/);
+        return true;
+      },
+    );
+    assert.throws(
+      () => resolveAntigravityWireModel("gemini-4-neon-high", "minimal"),
+      (error: unknown) => statusCode(error) === 400,
+    );
+    assert.throws(
+      () => buildAntigravityEnvelope({
+        model: "gemini-4-argon",
+        reasoning_effort: "xhigh",
+        messages: [{ role: "user", content: "hi" }],
+      }, "project", "session"),
+      (error: unknown) => statusCode(error) === 400,
+    );
+  });
+
+  it("collapses only thinking suffixes listed for that model", () => {
+    const listed = collapseAntigravityModels([
+      { id: "gemini-4-neon-xhigh", name: "Gemini 4 Neon (XHigh)" },
+      { id: "gemini-4-neon-high", name: "Gemini 4 Neon (High)" },
+      { id: "gemini-4-neon-medium", name: "Gemini 4 Neon (Medium)" },
+      { id: "gemini-4-neon-low", name: "Gemini 4 Neon (Low)" },
+      { id: "gemini-4-hydrogen-tiered-xhigh", name: "Gemini 4 Hydrogen (XHigh)" },
+      { id: "gemini-4-hydrogen-tiered-high", name: "Gemini 4 Hydrogen (High)" },
+      { id: "gemini-4-hydrogen-sonar", name: "" },
+      { id: "gemini-4-carbon-low", name: "Gemini 4 Carbon (Low)" },
+      { id: "gemini-4-carbon-medium", name: "Gemini 4 Carbon (Medium)" },
+      { id: "gemini-4-carbon-high", name: "Gemini 4 Carbon (High)" },
+      { id: "gemini-4-argon-disabled", name: "Gemini 4 Argon" },
+      { id: "gemini-3.8-flash-tiered", name: "" },
+      { id: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+      { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)" },
+    ]);
+    assert.deepEqual(listed.map((model) => model.id), [
+      "gemini-4-neon",
+      "gemini-4-hydrogen-tiered",
+      "gemini-4-hydrogen-sonar",
+      "gemini-4-carbon",
+      "gemini-4-argon-disabled",
+      "gemini-3.8-flash-tiered",
+      "gpt-oss-120b-medium",
+      "claude-opus-4-6-thinking",
+    ]);
+    assert.equal(listed[0]?.name, "Gemini 4 Neon");
+  });
+
   it("keeps the requested model and moves client system text onto the first user turn", () => {
     const envelope = buildAntigravityEnvelope({
       model: "antigravity/gemini-3.8-flash-tiered",
@@ -371,7 +462,7 @@ describe("antigravity provider", () => {
     ]);
     assert.equal(listed.data[0]?.name, "Gemini 3.8 Flash");
     assert.equal(resolveAntigravityWireModel("gemini-3.8-flash", "high"), "gemini-3.8-flash-high");
-    assert.equal(resolveAntigravityWireModel("gemini-4-argon"), "gemini-4-argon-high");
+    assert.equal(resolveAntigravityWireModel("gemini-4-argon"), "gemini-4-argon-low");
     assert.equal(resolveAntigravityWireModel("gemini-3.8-flash-tiered", "high"), "gemini-3.8-flash-tiered");
     assert.equal(resolveAntigravityWireModel("gpt-oss-120b-medium", "low"), "gpt-oss-120b-medium");
     const result = await chatCompletions(
@@ -390,6 +481,29 @@ describe("antigravity provider", () => {
     assert.equal(responded.status, 200);
     assert.equal(responded.upstreamModel, "gemini-3.8-flash-low");
     assert.equal(seenModel, "gemini-3.8-flash-low");
+  });
+
+  it("rejects a reasoning effort that the model does not list", async () => {
+    let called = false;
+    globalThis.fetch = async () => {
+      called = true;
+      return new Response("nope", { status: 500 });
+    };
+    await assert.rejects(
+      () => chatCompletions(
+        { body: { model: "gemini-4-argon", reasoning_effort: "xhigh", messages: [{ role: "user", content: "hi" }] }, headers: {} },
+        connection(),
+      ),
+      (error: unknown) => statusCode(error) === 400 && /xhigh/.test(message(error)),
+    );
+    await assert.rejects(
+      () => responses(
+        { body: { model: "gemini-4-hydrogen-tiered", input: "hi", reasoning: { effort: "low" } }, headers: {} },
+        connection(),
+      ),
+      (error: unknown) => statusCode(error) === 400 && /low/.test(message(error)),
+    );
+    assert.equal(called, false);
   });
 
   it("generates Nano Banana images through Cloud Code", async () => {
@@ -821,6 +935,16 @@ function connection() {
     providerId: "antigravity",
     credentials: { accessToken: "access", projectId: "aicode-consumers", email: "user@example.com" },
   };
+}
+
+function statusCode(error: unknown): number | undefined {
+  return error && typeof error === "object" && "statusCode" in error && typeof error.statusCode === "number"
+    ? error.statusCode
+    : undefined;
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : "";
 }
 
 function record(value: unknown): Record<string, unknown> {

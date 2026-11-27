@@ -711,7 +711,18 @@ function cleanModel(model: string): string {
 
 const HYPHEN_EFFORTS = ["-extra-high", "-xhigh", "-minimal", "-medium", "-none", "-high", "-low", "-max"] as const;
 const TIER_PREFERENCE = ["low", "medium", "high", "minimal", "xhigh", "max", "none"];
-const tieredEfforts = new Map<string, string[]>();
+
+// Catalog id → thinking suffixes that exist upstream. Sync strips a listed suffix; a request appends one.
+export const ANTIGRAVITY_THINKING_TIERS: Record<string, readonly string[]> = {
+  "claude-opus-5-5": ["low", "medium", "high"],
+  "claude-sonnet-5-5": ["low", "medium", "high"],
+  "gemini-3.8-flash": ["low", "medium", "high"],
+  "gemini-4-argon": ["low", "medium", "high"],
+  "gemini-4-carbon": ["low", "medium", "high"],
+  "gemini-4-hydrogen": ["low", "medium", "high", "xhigh"],
+  "gemini-4-hydrogen-tiered": ["high", "xhigh"],
+  "gemini-4-neon": ["low", "medium", "high", "xhigh"],
+};
 
 type AntigravityFamily = { stem: string; effort?: string; fast: boolean };
 
@@ -756,46 +767,46 @@ function cleanEffortLabel(label: string | undefined): string | undefined {
   return text || undefined;
 }
 
-function thinkingSuffixStem(stem: string): boolean {
-  return stem.startsWith("gemini-") || stem.startsWith("claude-");
+function thinkingTiers(logicalId: string): readonly string[] | undefined {
+  return ANTIGRAVITY_THINKING_TIERS[logicalId];
+}
+
+function pickThinkingTier(modelId: string, tiers: readonly string[], effort?: string, embedded?: string): string {
+  const requested = listedEffort(effort);
+  if (requested && !tiers.includes(requested)) {
+    throw Object.assign(
+      new Error(`reasoning effort ${requested} is not supported for ${modelId}; supported efforts: ${tiers.join(", ")}`),
+      { statusCode: 400 },
+    );
+  }
+  if (requested) return requested;
+  if (embedded && tiers.includes(embedded)) return embedded;
+  return defaultListedTier(tiers) ?? tiers[0] ?? "high";
+}
+
+function listedThinkingFamily(modelId: string): (AntigravityFamily & { logical: string }) | null {
+  const family = parseAntigravityFamily(modelId.trim().toLowerCase());
+  if (!family?.effort) return null;
+  const logical = `${family.stem}${family.fast ? "-fast" : ""}`;
+  const tiers = thinkingTiers(logical);
+  if (!tiers?.includes(family.effort)) return null;
+  return { ...family, logical };
 }
 
 export function collapseAntigravityModels<T extends { id: string; name?: string }>(models: T[]): T[] {
-  const efforts = new Map<string, string[]>();
-  const families = models.map((model) => ({ model, family: parseAntigravityFamily(model.id) }));
-  for (const item of families) {
-    if (!item.family?.effort) continue;
-    const logical = `${item.family.stem}${item.family.fast ? "-fast" : ""}`;
-    const tiers = efforts.get(logical) ?? [];
-    if (!tiers.includes(item.family.effort)) tiers.push(item.family.effort);
-    efforts.set(logical, tiers);
-  }
-  const collapsing: Record<string, true> = {};
-  for (const [logical, tiers] of efforts) {
-    const stem = logical.endsWith("-fast") ? logical.slice(0, -"-fast".length) : logical;
-    // gpt-oss-120b-medium is a size, not a thinking level. A single non-Gemini/Claude
-    // suffix stays as its own id; two or more tiers are a thinking family.
-    if (stem.startsWith("gpt-oss")) continue;
-    if (thinkingSuffixStem(stem) || tiers.length >= 2) collapsing[logical] = true;
-  }
-  tieredEfforts.clear();
-  for (const logical of Object.keys(collapsing)) {
-    const tiers = efforts.get(logical);
-    if (tiers) tieredEfforts.set(logical, tiers);
-  }
   const collapsed: T[] = [];
   const seen: Record<string, true> = {};
-  for (const item of families) {
-    const logical = item.family ? `${item.family.stem}${item.family.fast ? "-fast" : ""}` : item.model.id;
-    const id = item.family?.effort && collapsing[logical] ? logical : item.model.id;
+  for (const model of models) {
+    const match = listedThinkingFamily(model.id);
+    const id = match ? match.logical : model.id;
     if (seen[id]) continue;
     seen[id] = true;
-    if (id === item.model.id) {
-      collapsed.push(item.model);
+    if (!match) {
+      collapsed.push(model);
       continue;
     }
-    const name = cleanEffortLabel(item.model.name);
-    collapsed.push({ ...item.model, id, ...(name && name !== id ? { name } : { name: undefined }) });
+    const name = cleanEffortLabel(model.name);
+    collapsed.push({ ...model, id, ...(name && name !== id ? { name } : { name: undefined }) });
   }
   return collapsed;
 }
@@ -803,14 +814,14 @@ export function collapseAntigravityModels<T extends { id: string; name?: string 
 export function resolveAntigravityWireModel(modelId: string, effort?: string): string {
   const bare = modelId.trim();
   const key = bare.toLowerCase();
+  const direct = thinkingTiers(key);
+  if (direct) return `${key}-${pickThinkingTier(key, direct, effort)}`;
   const family = parseAntigravityFamily(key);
-  const logical = family ? `${family.stem}${family.fast ? "-fast" : ""}` : key;
-  const seen = tieredEfforts.get(logical);
-  const suffixFamily = Boolean(family?.effort && thinkingSuffixStem(family.stem));
-  if (!suffixFamily && !seen) return bare;
-  const tier = listedEffort(effort) ?? family?.effort ?? defaultListedTier(seen ?? []);
-  if (!tier) return bare;
-  return `${family?.stem ?? logical}-${tier}${family?.fast ? "-fast" : ""}`;
+  if (!family) return bare;
+  const logical = `${family.stem}${family.fast ? "-fast" : ""}`;
+  const tiers = thinkingTiers(logical);
+  if (!tiers || (family.effort && !tiers.includes(family.effort))) return bare;
+  return `${family.stem}-${pickThinkingTier(logical, tiers, effort, family.effort)}${family.fast ? "-fast" : ""}`;
 }
 
 function sanitizeToolName(name: string): string {
