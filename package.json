@@ -1,6 +1,6 @@
 {
   "name": "@viateai/plugin-antigravity",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Viate provider for a Google Antigravity subscription via the Antigravity IDE OAuth client.",
   "license": "MIT",
   "private": false,
